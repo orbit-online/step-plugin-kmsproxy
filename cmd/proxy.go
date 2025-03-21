@@ -1,121 +1,128 @@
 package cmd
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/base64"
 	"fmt"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"strings"
+	"os"
+	"path/filepath"
 
-	"github.com/go-piv/piv-go/piv"
+	"github.com/smallstep/cli-utils/step"
 	"github.com/spf13/cobra"
+	"go.step.sm/crypto/kms"
+	"go.step.sm/crypto/kms/apiv1"
 )
 
 const (
-	defaultPort = 8080
-	exampleTxt  = `
-Start a proxy points to cluster
- $ kubectl-yubikey-proxy --cluster-address=https://10.200.0.1 --cluster-ca=<base64 encoded cluster CA>
-`
+	exampleTxt = "  $ step-plugin-kmsproxy --cacert=ca.crt --listen localhost:8888 tpmkms:name=mykey https://cluster.example.com:6443"
 )
 
 func NewCmd() *cobra.Command {
-	srvAddr := ""
-	srvCA := ""
-	proxyPort := defaultPort
+	cacertPath := ""
+	listenAddrStr := "localhost:8080"
 
 	cmd := &cobra.Command{
-		Use:          "yubikey-proxy",
-		Short:        "Start a local proxy to authenticate to the Kubernetes API server with Yubikey via mTLS",
+		Use:          "step-plugin-kmsproxy <kmsuri> <targeturi>",
+		Short:        "Use smallstep to create mTLS tunnels",
 		Example:      exampleTxt,
+		Args:         cobra.ExactArgs(2),
 		SilenceUsage: true,
 		RunE: func(c *cobra.Command, args []string) error {
-			return startProxy(srvAddr, srvCA, proxyPort)
+			return startProxy(c.Context(), args[0], args[1], cacertPath, listenAddrStr)
 		},
 	}
 
-	cmd.Flags().StringVar(&srvAddr, "server-address", srvAddr, "Kubernetes API server address to connect")
-	cmd.Flags().StringVar(&srvCA, "server-ca", srvCA, "Kubernetes API server CA cert (base64 encoded)")
-	cmd.Flags().IntVar(&proxyPort, "proxy-port", defaultPort, fmt.Sprintf("local proxy port number. Defaults to %d", defaultPort))
+	cmd.Flags().StringVar(&cacertPath, "cacert", cacertPath, "Path to CA bundle file (PEM/X509). Uses system trust store by default.")
+	cmd.Flags().StringVarP(&listenAddrStr, "listen", "l", listenAddrStr, "Listen address")
 	return cmd
 }
 
-func startProxy(srvAddrStr string, srvCAStr string, proxyPort int) error {
-	if srvAddrStr == "" {
-		return fmt.Errorf("You must provide a the k8s API server address via the --server-address flag")
-	}
-	if !strings.HasPrefix(srvAddrStr, "https://") {
-		return fmt.Errorf("You must provide a the k8s API server address starts with 'https://'")
-	}
-	srvAddr, err := url.Parse(srvAddrStr)
+func startProxy(ctx context.Context, kuri string, target string, cacertPath string, listenAddrStr string) error {
+	targetAddr, err := url.Parse(target)
 	if err != nil {
 		return fmt.Errorf("Failed to parse server URL: %w", err)
 	}
-
-	if srvCAStr == "" {
-		return fmt.Errorf("You must provide a base64 encoded CA certificate of the k8s API server via the --server-ca flag")
-	}
-	srvCA, err := base64.StdEncoding.DecodeString(srvCAStr)
-	if err != nil {
-		return fmt.Errorf("Failed to decode base64 CA cert of the k8s API server: %w", err)
-	}
-	caCertPool := x509.NewCertPool()
-	caCertPool.AppendCertsFromPEM(srvCA)
-
-	cards, err := piv.Cards()
-	if err != nil {
-		return fmt.Errorf("Unable to read PIV cards: %w", err)
-	}
-
-	// Find a YubiKey and open the reader.
-	var yk *piv.YubiKey
-	for _, card := range cards {
-		if strings.Contains(strings.ToLower(card), "yubikey") {
-			if yk, err = piv.Open(card); err != nil {
-				return fmt.Errorf("Unable to open yubikey: %w", err)
-			}
-			break
+	var caCertPool *x509.CertPool
+	if cacertPath == "" {
+		caCertPool, err = x509.SystemCertPool()
+		return err
+	} else {
+		raw, err := os.ReadFile(cacertPath)
+		if err != nil {
+			return err
 		}
-	}
-	if yk == nil {
-		return fmt.Errorf("No Yubikey attached")
-	}
-
-	cert, err := yk.Certificate(piv.SlotAuthentication)
-	if err != nil {
-		return fmt.Errorf("Unable to read cert from the Yubikey authentication (9a) slot: %w", err)
-	}
-	// Create a crypto.PrivateKey that implements crypto.Decrypter to make Yubikey act as a crypto
-	// oracle to perform TLS handshake with the stored x509 client cert private key (without revealing
-	// the private key).
-	pk, err := yk.PrivateKey(piv.SlotAuthentication, cert.PublicKey, piv.KeyAuth{})
-	if err != nil {
-		return fmt.Errorf("Unable to create private key from Yubikey authentication (9a) slot: %w", err)
+		caCertPool := x509.NewCertPool()
+		caCertPool.AppendCertsFromPEM(raw)
 	}
 
-	proxy := httputil.NewSingleHostReverseProxy(srvAddr)
+	if err := step.Init(); err != nil {
+		return err
+	}
+	km, err := openKMS(ctx, kuri)
+	if err != nil {
+		return err
+	}
+	cm, ok := km.(apiv1.CertificateChainManager)
+	if !ok {
+		return fmt.Errorf("Unable to load certificates from KMS: %w", km)
+	}
+
+	proxy := httputil.NewSingleHostReverseProxy(targetAddr)
 	proxy.Transport = &http.Transport{
 		TLSClientConfig: &tls.Config{
-			Certificates: []tls.Certificate{
-				{
-					Certificate: [][]byte{cert.Raw},
-					PrivateKey:  pk,
-				},
+			GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+				var clientCerts [][]byte
+				tlsCerts := tls.Certificate{
+					Certificate: clientCerts,
+					PrivateKey:  km,
+				}
+				certs, err := cm.LoadCertificateChain(&apiv1.LoadCertificateChainRequest{
+					Name: "cloud-production",
+				})
+				if err != nil {
+					return nil, err
+				}
+				for _, c := range certs {
+					clientCerts = append(clientCerts, c.Raw)
+				}
+				return &tlsCerts, nil
 			},
 			RootCAs: caCertPool,
 		},
 	}
 
 	server := &http.Server{
-		Addr: fmt.Sprintf("localhost:%d", proxyPort),
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			proxy.ServeHTTP(w, r)
-		}),
+		Addr:    listenAddrStr,
+		Handler: http.HandlerFunc(proxy.ServeHTTP),
 	}
 
-	fmt.Printf("Proxy running on localhost: %d\n", proxyPort)
+	fmt.Printf("Proxy running on %s\n", listenAddrStr)
 	return server.ListenAndServe()
+}
+
+// Source: https://github.com/smallstep/step-kms-plugin/blob/3be48fd238cdc1d40dfad5e6410cf852544c3b4f/cmd/root.go#L74-L94
+func openKMS(ctx context.Context, kuri string) (apiv1.KeyManager, error) {
+	typ, err := apiv1.TypeOf(kuri)
+	if err != nil {
+		return nil, err
+	}
+
+	var storageDirectory string
+	if typ == apiv1.TPMKMS {
+		if err := step.Init(); err != nil {
+			return nil, err
+		}
+		storageDirectory = filepath.Join(step.Path(), "tpm")
+	}
+
+	// Type is not necessary, but it avoids an extra validation
+	return kms.New(ctx, apiv1.Options{
+		Type:             typ,
+		URI:              kuri,
+		StorageDirectory: storageDirectory,
+	})
 }
