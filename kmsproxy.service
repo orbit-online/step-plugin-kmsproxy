@@ -1,0 +1,15 @@
+[Unit]
+Description=mTLS proxy
+Requires=kmsproxy.socket
+
+[Install]
+Also=kmsproxy.socket
+WantedBy=default.target
+
+[Service]
+Type=simple
+StandardError=journal
+ExecStart=%h/.local/bin/step-plugin-kmsproxy \
+  --listen systemd: \
+  --cacert %h/.kube/server.crt \
+  tpmkms:name=mykey https://api.kube.example.com:6443

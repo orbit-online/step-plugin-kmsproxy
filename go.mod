@@ -5,6 +5,7 @@ go 1.23.6
 toolchain go1.23.7
 
 require (
+	github.com/coreos/go-systemd v0.0.0-20191104093116-d3cd4ed1dbcf
 	github.com/smallstep/cli-utils v0.12.1
 	github.com/spf13/cobra v1.9.1
 	go.step.sm/crypto v0.59.1

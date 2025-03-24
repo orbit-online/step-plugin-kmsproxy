@@ -1,0 +1,10 @@
+[Unit]
+Description=mTLS proxy
+Wants=multi-user.target
+After=multi-user.target
+
+[Install]
+WantedBy=default.target
+
+[Socket]
+ListenStream=127.0.0.1:8091

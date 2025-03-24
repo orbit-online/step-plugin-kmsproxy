@@ -5,12 +5,17 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"strings"
+	"syscall"
 
+	"github.com/coreos/go-systemd/activation"
 	"github.com/smallstep/cli-utils/step"
 	"github.com/spf13/cobra"
 	"go.step.sm/crypto/kms"
@@ -23,7 +28,7 @@ const (
 
 func NewCmd() *cobra.Command {
 	cacertPath := ""
-	listenAddrStr := "localhost:8080"
+	listenAddrStr := "tcp:localhost:8080"
 
 	cmd := &cobra.Command{
 		Use:          "step-plugin-kmsproxy <kmsuri> <targeturi>",
@@ -37,7 +42,7 @@ func NewCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&cacertPath, "cacert", cacertPath, "Path to CA bundle file (PEM/X509). Uses system trust store by default.")
-	cmd.Flags().StringVarP(&listenAddrStr, "listen", "l", listenAddrStr, "Listen address")
+	cmd.Flags().StringVarP(&listenAddrStr, "listen", "l", listenAddrStr, "Listening address (unix:<PATH>, tcp:<HOSTNAME>:<PORT>, or systemd:)")
 	return cmd
 }
 
@@ -99,13 +104,47 @@ func startProxy(ctx context.Context, kuri string, target string, cacertPath stri
 		},
 	}
 
-	server := &http.Server{
-		Addr:    listenAddrStr,
-		Handler: http.HandlerFunc(proxy.ServeHTTP),
+	proto, addr, found := strings.Cut(listenAddrStr, ":")
+	if !found {
+		return fmt.Errorf("Unable to determine listening method in --listen option, expected <PROTO>:<ADDR>, got %s", listenAddrStr)
+	}
+	var listener net.Listener
+	switch proto {
+	case "unix":
+		listener, err = net.Listen("unix", addr)
+		if err != nil {
+			return fmt.Errorf("Failed to open listener on address %s: %w", listenAddrStr, err)
+		}
+		fmt.Printf("Listening to unix socket at %s\n", addr)
+		defer listener.Close()
+		break
+	case "tcp":
+		listener, err = net.Listen("tcp", addr)
+		if err != nil {
+			return fmt.Errorf("Failed to open listener on address %s: %w", listenAddrStr, err)
+		}
+		fmt.Printf("Listening to %s\n", addr)
+		break
+	case "systemd":
+		listeners, err := activation.Listeners()
+		if err != nil {
+			return fmt.Errorf("Failed to retrieve SystemD listeners: %w", err)
+		}
+		if len(listeners) != 1 {
+			return fmt.Errorf("expected number of socket activation fds, got %d expected 1", len(listeners))
+		}
+		listener = listeners[0]
+		fmt.Println("Listening SystemD socket activation")
+		break
 	}
 
-	fmt.Printf("Proxy running on %s\n", listenAddrStr)
-	return server.ListenAndServe()
+	server := &http.Server{Handler: http.HandlerFunc(proxy.ServeHTTP)}
+	fmt.Println("Startup completed")
+	go server.Serve(listener)
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, os.Kill, syscall.SIGTERM)
+	_ = <-c
+	return err
 }
 
 // Source: https://github.com/smallstep/step-kms-plugin/blob/3be48fd238cdc1d40dfad5e6410cf852544c3b4f/cmd/root.go#L74-L94
