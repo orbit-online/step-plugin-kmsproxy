@@ -29,6 +29,7 @@ const (
 func NewCmd() *cobra.Command {
 	cacertPath := ""
 	listenAddrStr := "tcp:localhost:8080"
+	insecureSkipVerify := false
 
 	cmd := &cobra.Command{
 		Use:          "step-plugin-kmsproxy <kmsuri> <targeturi>",
@@ -37,16 +38,17 @@ func NewCmd() *cobra.Command {
 		Args:         cobra.ExactArgs(2),
 		SilenceUsage: true,
 		RunE: func(c *cobra.Command, args []string) error {
-			return startProxy(c.Context(), args[0], args[1], cacertPath, listenAddrStr)
+			return startProxy(c.Context(), args[0], args[1], cacertPath, listenAddrStr, insecureSkipVerify)
 		},
 	}
 
 	cmd.Flags().StringVar(&cacertPath, "cacert", cacertPath, "Path to CA bundle file (PEM/X509). Uses system trust store by default.")
 	cmd.Flags().StringVarP(&listenAddrStr, "listen", "l", listenAddrStr, "Listening address (unix:<PATH>, tcp:<HOSTNAME>:<PORT>, or systemd:)")
+	cmd.Flags().BoolVar(&insecureSkipVerify, "insecure-skip-verify", insecureSkipVerify, "Disable validation of the server certificate")
 	return cmd
 }
 
-func startProxy(ctx context.Context, kuri string, target string, cacertPath string, listenAddrStr string) error {
+func startProxy(ctx context.Context, kuri string, target string, cacertPath string, listenAddrStr string, insecureSkipVerify bool) error {
 	targetAddr, err := url.Parse(target)
 	if err != nil {
 		return fmt.Errorf("Failed to parse target URL: %w", err)
@@ -100,7 +102,8 @@ func startProxy(ctx context.Context, kuri string, target string, cacertPath stri
 					PrivateKey:  key,
 				}, nil
 			},
-			RootCAs: caCertPool,
+			RootCAs:            caCertPool,
+			InsecureSkipVerify: insecureSkipVerify,
 		},
 	}
 
