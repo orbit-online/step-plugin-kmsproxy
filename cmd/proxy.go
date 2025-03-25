@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -15,7 +14,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/coreos/go-systemd/activation"
+	"github.com/orbit-online/step-plugin-kmsproxy/listeners"
 	"github.com/smallstep/cli-utils/step"
 	"github.com/spf13/cobra"
 	"go.step.sm/crypto/kms"
@@ -111,34 +110,10 @@ func startProxy(ctx context.Context, kuri string, target string, cacertPath stri
 	if !found {
 		return fmt.Errorf("Unable to determine listening method in --listen option, expected <PROTO>:<ADDR>, got %s", listenAddrStr)
 	}
-	var listener net.Listener
-	switch proto {
-	case "unix":
-		listener, err = net.Listen("unix", addr)
-		if err != nil {
-			return fmt.Errorf("Failed to open listener on address %s: %w", listenAddrStr, err)
-		}
-		fmt.Printf("Listening to unix socket at %s\n", addr)
-		defer listener.Close()
-		break
-	case "tcp":
-		listener, err = net.Listen("tcp", addr)
-		if err != nil {
-			return fmt.Errorf("Failed to open listener on address %s: %w", listenAddrStr, err)
-		}
-		fmt.Printf("Listening to %s\n", addr)
-		break
-	case "systemd":
-		listeners, err := activation.Listeners()
-		if err != nil {
-			return fmt.Errorf("Failed to retrieve SystemD listeners: %w", err)
-		}
-		if len(listeners) != 1 {
-			return fmt.Errorf("expected number of socket activation fds, got %d expected 1", len(listeners))
-		}
-		listener = listeners[0]
-		fmt.Println("Listening SystemD socket activation")
-		break
+
+	listener, err := listeners.CreateListener(proto, addr)
+	if err != nil {
+		return err
 	}
 
 	server := &http.Server{Handler: http.HandlerFunc(proxy.ServeHTTP)}
