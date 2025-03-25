@@ -67,19 +67,18 @@ func startProxy(ctx context.Context, kuri string, target string, cacertPath stri
 		caCertPool.AppendCertsFromPEM(raw)
 	}
 
-	km, err := openKMS(ctx, kuri)
-	if err != nil {
-		return fmt.Errorf("Unable to open KMS using URI %s: %w", kuri, err)
-	}
-	cm, ok := km.(apiv1.CertificateChainManager)
-	if !ok {
-		return fmt.Errorf("Unable to load certificates from KMS: %w", km)
-	}
-
 	proxy := httputil.NewSingleHostReverseProxy(targetAddr)
 	proxy.Transport = &http.Transport{
 		TLSClientConfig: &tls.Config{
 			GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+				km, err := openKMS(ctx, kuri)
+				if err != nil {
+					return nil, fmt.Errorf("Unable to open KMS using URI %s: %w", kuri, err)
+				}
+				cm, ok := km.(apiv1.CertificateChainManager)
+				if !ok {
+					return nil, fmt.Errorf("Unable to load certificates from KMS: %w", km)
+				}
 				var clientCerts [][]byte
 				certs, err := cm.LoadCertificateChain(&apiv1.LoadCertificateChainRequest{
 					Name: kuri,
