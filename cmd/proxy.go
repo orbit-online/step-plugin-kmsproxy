@@ -67,38 +67,48 @@ func startProxy(ctx context.Context, kuri string, target string, cacertPath stri
 		caCertPool.AppendCertsFromPEM(raw)
 	}
 
+	loadCert := func() (*tls.Certificate, error) {
+		km, err := openKMS(ctx, kuri)
+		if err != nil {
+			return nil, fmt.Errorf("Unable to open KMS using URI %s: %w", kuri, err)
+		}
+		cm, ok := km.(apiv1.CertificateChainManager)
+		if !ok {
+			return nil, fmt.Errorf("Unable to load certificates from KMS: %w", km)
+		}
+		var clientCerts [][]byte
+		certs, err := cm.LoadCertificateChain(&apiv1.LoadCertificateChainRequest{
+			Name: kuri,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("Failed to load certificates from KMS URI %s: %w", kuri, err)
+		}
+		for _, c := range certs {
+			clientCerts = append(clientCerts, c.Raw)
+		}
+		key, err := km.CreateSigner(&apiv1.CreateSignerRequest{
+			SigningKey: kuri,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("Failed to load private key using KMS URI %s: %w", kuri, err)
+		}
+		return &tls.Certificate{
+			Certificate: clientCerts,
+			PrivateKey:  key,
+		}, nil
+	}
+
+	// Test loading
+	_, err = loadCert()
+	if err != nil {
+		return fmt.Errorf("Failed to load client certificate: %w", err)
+	}
+
 	proxy := httputil.NewSingleHostReverseProxy(targetAddr)
 	proxy.Transport = &http.Transport{
 		TLSClientConfig: &tls.Config{
 			GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
-				km, err := openKMS(ctx, kuri)
-				if err != nil {
-					return nil, fmt.Errorf("Unable to open KMS using URI %s: %w", kuri, err)
-				}
-				cm, ok := km.(apiv1.CertificateChainManager)
-				if !ok {
-					return nil, fmt.Errorf("Unable to load certificates from KMS: %w", km)
-				}
-				var clientCerts [][]byte
-				certs, err := cm.LoadCertificateChain(&apiv1.LoadCertificateChainRequest{
-					Name: kuri,
-				})
-				if err != nil {
-					return nil, fmt.Errorf("Failed to load certificates from KMS URI %s: %w", kuri, err)
-				}
-				for _, c := range certs {
-					clientCerts = append(clientCerts, c.Raw)
-				}
-				key, err := km.CreateSigner(&apiv1.CreateSignerRequest{
-					SigningKey: kuri,
-				})
-				if err != nil {
-					return nil, fmt.Errorf("Failed to load private key using KMS URI %s: %w", kuri, err)
-				}
-				return &tls.Certificate{
-					Certificate: clientCerts,
-					PrivateKey:  key,
-				}, nil
+				return loadCert()
 			},
 			RootCAs:            caCertPool,
 			InsecureSkipVerify: insecureSkipVerify,
