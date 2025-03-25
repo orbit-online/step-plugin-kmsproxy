@@ -17,7 +17,7 @@ func init() {
 			return nil, fmt.Errorf("expected number of socket activation fds, got %d expected 1", len(listeners))
 		}
 		listener := listeners[0]
-		fmt.Println("Listening SystemD socket activation")
+		fmt.Println("Listening through SystemD socket activation")
 		return listener, nil
 	})
 }
