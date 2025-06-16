@@ -110,6 +110,7 @@ func startProxy(ctx context.Context, kuri string, target string, cacertPath stri
 			GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
 				return loadCert()
 			},
+			Renegotiation:      tls.RenegotiateFreelyAsClient,
 			RootCAs:            caCertPool,
 			InsecureSkipVerify: insecureSkipVerify,
 		},
