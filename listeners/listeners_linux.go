@@ -14,7 +14,7 @@ func init() {
 			return nil, fmt.Errorf("Failed to retrieve SystemD listeners: %w", err)
 		}
 		if len(listeners) != 1 {
-			return nil, fmt.Errorf("expected number of socket activation fds, got %d expected 1", len(listeners))
+			return nil, fmt.Errorf("Unexpected number of socket activation fds, got %d expected 1", len(listeners))
 		}
 		listener := listeners[0]
 		fmt.Println("Listening through SystemD socket activation")

@@ -74,7 +74,7 @@ func startProxy(ctx context.Context, kuri string, target string, cacertPath stri
 		}
 		cm, ok := km.(apiv1.CertificateChainManager)
 		if !ok {
-			return nil, fmt.Errorf("Unable to load certificates from KMS: %w", km)
+			return nil, fmt.Errorf("Unable to load certificates from KMS: %s", km)
 		}
 		var clientCerts [][]byte
 		certs, err := cm.LoadCertificateChain(&apiv1.LoadCertificateChainRequest{
