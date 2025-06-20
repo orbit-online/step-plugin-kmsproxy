@@ -21,7 +21,7 @@ func init() {
 	listenerMap.Store("tcp", func(addr string) (net.Listener, error) {
 		listener, err := net.Listen("tcp", addr)
 		if err != nil {
-			return nil, fmt.Errorf("Failed to open listener on address %s: %w", "tcp", addr, err)
+			return nil, fmt.Errorf("Failed to open listener on address %s:%s: %w", "tcp", addr, err)
 		}
 		fmt.Printf("Listening to %s\n", addr)
 		return listener, nil
